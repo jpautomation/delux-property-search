@@ -1,0 +1,9 @@
+imap-tools
+requests
+beautifulsoup4
+pandas
+tabulate
+numpy
+pyproj
+# rasterio is optional (only needed if using CPRE tranquillity raster)
+# Install via: conda install rasterio

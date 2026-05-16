@@ -1,0 +1,23 @@
+# Personal credentials and config — never commit
+config.json
+
+# Personal data
+results.csv
+manual_urls.txt
+map.html
+
+# Ofcom broadband data — large files, download separately (see README)
+postcode_files/
+
+# CPRE tranquillity raster — not publicly available
+tranquillity.tif
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# OS
+.DS_Store
+Thumbs.db

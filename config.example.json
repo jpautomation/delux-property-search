@@ -1,0 +1,47 @@
+{
+  "email": {
+    "imap_server": "imap.gmail.com",
+    "port": 993,
+    "username": "your.email@gmail.com",
+    "app_password": "xxxx xxxx xxxx xxxx"
+  },
+  "weights": {
+    "tranquillity":  0.28,
+    "property_type": 0.18,
+    "flood_risk":    0.14,
+    "price":         0.10,
+    "bedrooms":      0.10,
+    "broadband":     0.10,
+    "drive_time":    0.10
+  },
+  "thresholds": {
+    "min_bedrooms":      2,
+    "target_bedrooms":   3,
+    "max_price_gbp":     1000000,
+    "max_drive_minutes": 60,
+    "reference_lat":     0.0,
+    "reference_lon":     0.0
+  },
+  "property_type_scores": {
+    "farmhouse":          100,
+    "barn conversion":    100,
+    "detached":           90,
+    "character property": 85,
+    "cottage":            80,
+    "bungalow":           60,
+    "semi-detached":      45,
+    "end of terrace":     30,
+    "terraced":           20,
+    "maisonette":         15,
+    "flat":               0,
+    "apartment":          0
+  },
+  "openrouteservice_api_key": "your-openrouteservice-api-key",
+  "epc_api_key": "your-epc-bearer-token",
+  "cpre_raster_path":  "tranquillity.tif",
+  "ofcom_pc_folder":   "postcode_files",
+  "rightmove_sender":  "your.email@outlook.com",
+  "rightmove_subject": "we've found you",
+  "fetch_all_email":   true,
+  "results_csv":       "results.csv"
+}
