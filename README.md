@@ -77,6 +77,14 @@ https://www.rightmove.co.uk/properties/123456789
 python property_scorer.py
 ```
 
+The script records the date of each run in `last_fetch_date.txt`. Subsequent runs fetch only emails received since that date, regardless of whether those emails have been read elsewhere.
+
+On the first run (no stored date), the last 90 days are fetched. To go further back:
+
+```bash
+python property_scorer.py --since 2026-01-01
+```
+
 Results are saved to `results.csv`. Open `map.html` in a browser for the interactive map.
 
 ## Scoring weights

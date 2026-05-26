@@ -5,6 +5,7 @@ config.json
 results.csv
 manual_urls.txt
 map.html
+last_fetch_date.txt
 
 # Ofcom broadband data — large files, download separately (see README)
 postcode_files/

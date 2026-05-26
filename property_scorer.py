@@ -62,6 +62,23 @@ if not os.path.exists(_config_path):
 with open(_config_path, encoding="utf-8") as _f:
     CONFIG = json.load(_f)
 
+_STATE_FILE = os.path.join(os.path.dirname(__file__), "last_fetch_date.txt")
+
+
+def load_last_fetch_date():
+    from datetime import date as _d
+    if os.path.exists(_STATE_FILE):
+        try:
+            return _d.fromisoformat(open(_STATE_FILE, encoding="utf-8").read().strip())
+        except Exception:
+            pass
+    return None
+
+
+def save_last_fetch_date(d) -> None:
+    with open(_STATE_FILE, "w", encoding="utf-8") as _f:
+        _f.write(d.isoformat())
+
 # ──────────────────────────────────────────────────────────────────────────────
 # DATA CLASSES
 # ──────────────────────────────────────────────────────────────────────────────
@@ -96,6 +113,7 @@ class Property:
     flag_paddock: bool = False
     flag_land: bool = False
     flag_holiday: bool = False
+    pub_distance_km: Optional[float] = None
     scores: dict = field(default_factory=dict)
     total_score: float = 0.0
     notes: list = field(default_factory=list)
@@ -132,7 +150,8 @@ def load_manual_properties(config: dict) -> list:
 # EMAIL READER
 # ──────────────────────────────────────────────────────────────────────────────
 
-def fetch_rightmove_emails(config: dict) -> list:
+def fetch_rightmove_emails(config: dict, since_date=None) -> list:
+    """Fetch Rightmove alert emails since since_date (or all if None)."""
     properties = []
     seen_urls = set()
     email_cfg = config["email"]
@@ -140,14 +159,15 @@ def fetch_rightmove_emails(config: dict) -> list:
     with MailBox(email_cfg["imap_server"]).login(
         email_cfg["username"], email_cfg["app_password"]
     ) as mailbox:
+        sender = config["rightmove_sender"]
         subject = config.get("rightmove_subject", "")
-        if config.get("fetch_all_email"):
-            criteria = AND(from_=config["rightmove_sender"], subject=subject) if subject else AND(from_=config["rightmove_sender"])
+        if since_date is not None:
+            criteria = (AND(from_=sender, subject=subject, date_gte=since_date)
+                        if subject else AND(from_=sender, date_gte=since_date))
+            print(f"Fetching emails from {sender} since {since_date}...")
         else:
-            from datetime import date, timedelta
-            criteria = AND(from_=config["rightmove_sender"], subject=subject,
-                           date_gte=date.today() - timedelta(days=30)) if subject else AND(
-                from_=config["rightmove_sender"], date_gte=date.today() - timedelta(days=30))
+            criteria = AND(from_=sender, subject=subject) if subject else AND(from_=sender)
+            print(f"Fetching all emails from {sender}...")
 
         for msg in mailbox.fetch(criteria):
             html = msg.html or ""
@@ -647,6 +667,18 @@ def score_broadband(prop: Property, config: dict) -> float:
         return 50.0
 
 
+def _haversine(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Returns great-circle distance in km."""
+    import math
+    R = 6371.0
+    d_lat = math.radians(lat2 - lat1)
+    d_lon = math.radians(lon2 - lon1)
+    a = (math.sin(d_lat / 2) ** 2
+         + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2))
+         * math.sin(d_lon / 2) ** 2)
+    return R * 2 * math.asin(math.sqrt(a))
+
+
 def score_drive_time(prop: Property, config: dict) -> float:
     if not prop.lat or not prop.lon:
         return 50.0
@@ -675,6 +707,49 @@ def score_drive_time(prop: Property, config: dict) -> float:
         prop.notes.append(f"Drive time error: {e}")
         return 50.0
 
+def score_nearest_pub(prop: Property, config: dict) -> float:
+    if not prop.lat or not prop.lon:
+        return 50.0
+    try:
+        query = (
+            f"[out:json][timeout:15];"
+            f"(node[amenity=pub](around:5000,{prop.lat},{prop.lon});"
+            f"way[amenity=pub](around:5000,{prop.lat},{prop.lon}););"
+            f"out center;"
+        )
+        r = requests.post(
+            "https://overpass-api.de/api/interpreter",
+            data={"data": query},
+            headers={"User-Agent": "PropertyScorer/1.0"},
+            timeout=20,
+        )
+        elements = r.json().get("elements", [])
+        if not elements:
+            prop.pub_distance_km = None
+            return 0.0
+        min_dist = float("inf")
+        for el in elements:
+            plat = el.get("lat") or (el.get("center") or {}).get("lat")
+            plon = el.get("lon") or (el.get("center") or {}).get("lon")
+            if plat is None or plon is None:
+                continue
+            dist = _haversine(prop.lat, prop.lon, float(plat), float(plon))
+            if dist < min_dist:
+                min_dist = dist
+        if min_dist == float("inf"):
+            return 0.0
+        prop.pub_distance_km = round(min_dist, 2)
+        # 100 at ≤0.5 km, 0 at ≥5 km, linear in between
+        if min_dist <= 0.5:
+            return 100.0
+        if min_dist >= 5.0:
+            return 0.0
+        return float(np.clip(100 * (1 - (min_dist - 0.5) / 4.5), 0, 100))
+    except Exception as e:
+        prop.notes.append(f"Pub distance error: {e}")
+        return 50.0
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # AGGREGATION
 # ──────────────────────────────────────────────────────────────────────────────
@@ -687,6 +762,7 @@ SCORERS = {
     "bedrooms":      score_bedrooms,
     "broadband":     score_broadband,
     "drive_time":    score_drive_time,
+    "pub":           score_nearest_pub,
 }
 
 def score_property(prop: Property, config: dict) -> None:
@@ -751,6 +827,7 @@ CSV_COLUMNS = [
     "lat", "lon", "status", "floor_area", "price_per_sqm", "land_acres",
     "total_score", "tranquillity", "property_type_score", "flood_risk",
     "price_score", "bedrooms_score", "broadband", "drive_time",
+    "pub_score", "pub_distance_km",
     "key_features", "description",
     "views", "stone_built", "garage", "outbuildings", "log_burner", "aga",
     "no_chain", "annexe", "woodland", "planning", "period_character", "paddock",
@@ -805,6 +882,8 @@ def save_results(properties: list, config: dict) -> None:
             "bedrooms_score":      s.get("bedrooms", ""),
             "broadband":           s.get("broadband", ""),
             "drive_time":          s.get("drive_time", ""),
+            "pub_score":           s.get("pub", ""),
+            "pub_distance_km":     p.pub_distance_km,
             "key_features":        " | ".join(p.key_features),
             "description":         p.description,
             "views":               "Y" if p.flag_views else "",
@@ -941,6 +1020,8 @@ def generate_map(config: dict) -> None:
             "bedrooms_score":     _sf(row.get("bedrooms_score"), 0),
             "broadband":          _sf(row.get("broadband"), 0),
             "drive_time":         _sf(row.get("drive_time"), 0),
+            "pub_score":          _sf(row.get("pub_score"), 0),
+            "pub_distance_km":    _sf(row.get("pub_distance_km")),
         })
 
     props_json = json.dumps(props_data)
@@ -1000,6 +1081,8 @@ def generate_map(config: dict) -> None:
     <input type="range" id="w_broadband" min="0" max="100" value="{_wi(w['broadband'])}" oninput="update()"></div>
   <div class="srow"><label><span>Drive time</span><b id="lv_drive_time">{_wi(w['drive_time'])}</b></label>
     <input type="range" id="w_drive_time" min="0" max="100" value="{_wi(w['drive_time'])}" oninput="update()"></div>
+  <div class="srow"><label><span>Pub distance</span><b id="lv_pub">{_wi(w['pub'])}</b></label>
+    <input type="range" id="w_pub" min="0" max="100" value="{_wi(w['pub'])}" oninput="update()"></div>
   <div id="total"></div>
   <button onclick="reset()" style="font-size:12px;width:100%;padding:4px;">Reset defaults</button>
 
@@ -1016,7 +1099,7 @@ def generate_map(config: dict) -> None:
 </div>
 <div id="map"></div>
 <script>
-var DEFAULTS = {{tranquillity:{_wi(w['tranquillity'])},property_type:{_wi(w['property_type'])},flood_risk:{_wi(w['flood_risk'])},price:{_wi(w['price'])},bedrooms:{_wi(w['bedrooms'])},broadband:{_wi(w['broadband'])},drive_time:{_wi(w['drive_time'])}}};
+var DEFAULTS = {{tranquillity:{_wi(w['tranquillity'])},property_type:{_wi(w['property_type'])},flood_risk:{_wi(w['flood_risk'])},price:{_wi(w['price'])},bedrooms:{_wi(w['bedrooms'])},broadband:{_wi(w['broadband'])},drive_time:{_wi(w['drive_time'])},pub:{_wi(w['pub'])}}};
 var properties = {props_json};
 
 var map = L.map('map').setView([{centre_lat},{centre_lon}], 11);
@@ -1027,7 +1110,7 @@ L.marker([{centre_lat},{centre_lon}]).bindPopup('<b>Congleton</b>').addTo(map);
 
 var layerGroup = L.layerGroup().addTo(map);
 
-var KEYS = ['tranquillity','property_type','flood_risk','price','bedrooms','broadband','drive_time'];
+var KEYS = ['tranquillity','property_type','flood_risk','price','bedrooms','broadband','drive_time','pub'];
 
 function getWeights() {{
   var w = {{}};
@@ -1044,7 +1127,8 @@ function calcScore(prop, w) {{
           w.price * prop.price_score +
           w.bedrooms * prop.bedrooms_score +
           w.broadband * prop.broadband +
-          w.drive_time * prop.drive_time) / wsum;
+          w.drive_time * prop.drive_time +
+          w.pub * prop.pub_score) / wsum;
 }}
 
 function scoreColor(s) {{
@@ -1094,6 +1178,7 @@ function renderMarkers(w, f) {{
     if (p.land_acres) popup += p.land_acres + ' acres<br>';
     if (p.status) popup += '<b style="color:#c0392b">' + p.status + '</b><br>';
     popup += '<b>Score: ' + (score !== null ? score : '—') + '</b><br>';
+    if (p.pub_distance_km !== null) popup += 'Pub: ' + p.pub_distance_km + ' km<br>';
     popup += 'Tranq:' + p.tranquillity + ' Flood:' + p.flood_risk
            + ' BB:' + p.broadband + ' Drive:' + p.drive_time + '<br>';
     if (p.key_features) popup += '<i style="font-size:11px">' + p.key_features + '</i><br>';
@@ -1161,16 +1246,44 @@ update();
 
 def main():
     import sys
+    import argparse
+    from datetime import date as _date, timedelta
     sys.stdout.reconfigure(encoding="utf-8")
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s",
                         stream=sys.stdout)
+
+    parser = argparse.ArgumentParser(description="Delux Property Search")
+    parser.add_argument(
+        "--since",
+        metavar="YYYY-MM-DD",
+        type=lambda s: _date.fromisoformat(s),
+        default=None,
+        help="Override: fetch emails from this date (default: since last run)",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Re-score all properties, ignoring the seen/unchanged cache",
+    )
+    args = parser.parse_args()
+
+    # Determine fetch window
+    since_date = args.since
+    if since_date is None:
+        since_date = load_last_fetch_date()
+        if since_date is None:
+            print("No previous fetch date recorded — fetching last 90 days.")
+            print("Use --since YYYY-MM-DD to fetch further back.")
+            since_date = _date.today() - timedelta(days=90)
+        else:
+            print(f"Last fetch date: {since_date}")
 
     seen = load_seen(CONFIG)
     if seen:
         logging.info(f"{len(seen)} properties already in results.csv")
 
-    print("Reading Rightmove alert emails...")
-    properties = fetch_rightmove_emails(CONFIG)
+    properties = fetch_rightmove_emails(CONFIG, since_date=since_date)
+    save_last_fetch_date(_date.today())
 
     # Merge manual URLs (deduplicate by property ID)
     manual = load_manual_properties(CONFIG)
@@ -1203,7 +1316,7 @@ def main():
     for prop in properties:
         m = re.search(r"/properties/(\d+)", prop.url)
         prop_id = m.group(1) if m else None
-        if prop_id not in seen:
+        if args.force or prop_id not in seen:
             to_score.append(prop)
         elif prop.price and prop.price != seen.get(prop_id):
             logging.info(f"Price changed for {prop.url}: £{seen[prop_id]:,} → £{prop.price:,}")

@@ -12,7 +12,8 @@
     "price":         0.10,
     "bedrooms":      0.10,
     "broadband":     0.10,
-    "drive_time":    0.10
+    "drive_time":    0.10,
+    "pub":           0.05
   },
   "thresholds": {
     "min_bedrooms":      2,
@@ -42,6 +43,5 @@
   "ofcom_pc_folder":   "postcode_files",
   "rightmove_sender":  "your.email@outlook.com",
   "rightmove_subject": "we've found you",
-  "fetch_all_email":   true,
   "results_csv":       "results.csv"
 }
